@@ -1,0 +1,6 @@
+
+name = Custom Module
+description = Provides Custom Module.
+package = "Custom"
+core = 7.x
+dependencies[] = media_internet

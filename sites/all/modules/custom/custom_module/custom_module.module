@@ -1,0 +1,315 @@
+<?php
+
+/**
+ *Implements hook_menu
+ */
+function custom_module_menu() {
+	$items = array();
+	$items['custom_module'] = array(
+		'title' => 'Custom Module Check',
+		'page callback' => 'custom_module_check_soundcloud',		
+		'access callback' => TRUE,
+		'type' => MENU_CALLBACK,
+	);
+	
+	$items['custom_ustream'] = array(
+		'title' => 'Custom Module for Ustream',
+		'page callback' => 'custom_module_check_ustream',		
+		'access callback' => TRUE,
+		'type' => MENU_CALLBACK,
+	);
+	
+	return $items;
+}
+
+/*
+ *  Implementation of custom_module_check_ustream
+ */
+function custom_module_check_ustream() {
+	
+	$embedCode = "http://www.ustream.tv/recorded/39736454";
+	
+	 $embedCode = trim($embedCode);
+
+    // Patterns.
+    $recorded_patterns = array(
+      // Matches the URL for the video page.
+      '@ustream\.tv/recorded/(\d+)@i'             => 'recorded',
+      // Matches the URL from the embed code for recorded videos.
+      '@ustream\.tv/embed/recorded/([^"\&\?]+)@i' => 'recorded',
+      // Channel.
+      '@ustream\.tv/channel/([a-zA-Z0-9_\-]+)@i'  => 'live',
+      // Channel embed.
+      '@ustream\.tv/embed/([^"\&\?]+)@i'          => 'live',
+      // Matches the URL for the user page.
+      '@ustream\.tv/user/([a-zA-Z0-9_\-]+)@i'     => 'user',
+      // User channel or promoted channel.
+      '@ustream\.tv/([a-zA-Z0-9_\-]+)$@i'         => 'channeloruser',
+    );
+    
+    print '<pre>';
+    foreach ($recorded_patterns as $pattern => $type) {
+      preg_match($pattern, $embedCode, $matches);
+      print 'Match:  '.$type; echo '<br>';
+      print_r($matches); echo '<br>';
+      if(!empty($matches[1])) {			
+			if ($fid = custom_module_knownId(check_plain($matches[1]), $type)) {				
+				   print 'In First loop'; echo '<br>';
+				  $existing_file = file_load($fid);
+				  $parts = explode('://', $existing_file->uri);				  
+				  $file_uri = $parts[1];			
+				  print $file_uri;echo '<br>';					  
+			}
+	  }
+  }
+  
+  if(isset($file_uri)) {
+	 $uri = file_stream_wrapper_uri_normalize('ustream://' . $file_uri);
+	 print_r($uri); echo '<br>';
+	 $wrapper = file_stream_wrapper_get_instance_by_uri($uri);
+	 $parameters = $wrapper->get_parameters();
+	 
+	 $params = custom_module_parse_url($uri);	 
+	 $query = array(    
+		'wmode' => 'direct',
+	);
+	$query['autoplay'] = 1;
+	if ($parameters['recorded']) {
+		$url = "http://www.ustream.tv/embed/recorded/{$params['video_id']}";		
+	}else {
+		$url = "http://www.ustream.tv/embed/{$params['video_id']}";		
+	}
+	print_r(url($url, array('query' => $query, 'external' => TRUE)));
+	 
+	 print_r($parse_url); echo '<br>';	 
+	 print_r($wrapper); echo '<br>';
+	 print_r($parameters); echo '<br>';
+	 die('Dying in Wrapper');
+  }    
+}
+
+/**
+ * Implementation of custom_module_parse_url
+ */
+function custom_module_parse_url($url) {
+    $path = explode('://', $url);
+    $parts = explode('/',  $path[1]);
+    $total = count($parts);
+    if ($total != 2 || $path[0] != 'ustream') {
+      return FALSE;
+    }
+    $params = array();
+    $params['recorded'] = ($parts[0] == 'recorded');
+    $params['video_id'] = $parts[1];
+
+    return $params;
+}
+  
+/**
+ * Implementation of custom_module_getViaOEmbed
+ */
+function custom_module_getViaOEmbed($uri) {        
+    $oembed_url = 'http://www.ustream.tv/oembed?url=http%3A//ustream.tv/' . $uri . '&format=json';
+    $response = drupal_http_request($oembed_url);
+    print_r($response); echo '<br>';
+    $data = drupal_json_decode($response->data);
+    print_r($data); echo '<br>';
+    
+    print 'Dying in Response';
+    /*$data = drupal_json_decode($response->data);
+    
+      $ids[$id] = $data;
+      cache_set('media_ustream:oembed:' . $id, $ids[$id], 'cache_media_xml', variable_get('media__xml_cache_expire', 3600));
+      return $data;
+    }
+    return NULL;  */
+}
+
+/**
+ * Implementation of custom_module_validId
+ */
+function custom_module_validId($id, $type, $refresh = FALSE) {
+    $ids = &drupal_static(__FUNCTION__, array(), array());
+    if (!$refresh && isset($ids[$id])) {
+      return $ids[$id];
+    }
+    elseif (!$refresh && $cache = cache_get('media_ustream:id:' . $id, 'cache_media_xml')) {
+      $ids[$id] = $cache->data;
+      return $ids[$id];
+    }
+    // Now lets validate per type.
+    switch ($type) {
+      case 'recorded':
+        $properties = self::getVideoProperties($id);
+        if (!empty($properties['error'])) {
+          throw new MediaInternetValidationException(
+              "The UStream video ID '$id' does not exist,
+               is set to private, or has been deleted.");
+        }
+        break;
+
+      case 'live':
+        $properties = self::getChannelProperties($id);
+        if (!empty($properties['error']) || $properties['results']['title'] == NULL) {
+          throw new MediaInternetValidationException(
+              "The UStream channel ID '$id' does not exist,
+               is set to private, or has been deleted.");
+        }
+        break;
+
+      case 'user':
+        $properties = self::getUserProperties($id);
+        if (!empty($properties['error'])) {
+          throw new MediaInternetValidationException(
+              "The UStream user ID '$id' does not exist,
+              is set to private, or has been deleted.");
+        }
+        break;
+
+      case 'channeloruser':
+        // Check if this is a channel.
+        $properties = self::getChannelProperties(check_plain($id));
+        // If we have an error, it isn't a channel and
+        // we need to check for user channels.
+        if (!empty($properties['error'])) {
+          // Grab the clean oembed.
+          $oembed = self::getViaOEmbed(check_plain($id));
+          // Unknown user and channel, we will abort.
+          if (!isset($oembed) || !empty($oembed['error'])) {
+            throw new MediaInternetValidationException(
+              "The UStream user or channel ID '$id' does not
+               exist, is set to private, or has been deleted.");
+          }
+          // We need the last part of the author_url.
+          $path = explode('/user/', $oembed['author_url']);
+          // If this is not a channel, check if it's a user with channels.
+          $user = self::getUserProperties($path[1]);
+          // If it indeed IS a known user, continue, else trow an error.
+          if (empty($user['error'])) {
+            // Fetch user channels.
+            $channels = self::getUserChannels(check_plain($user['results']['id']));
+            // Then fetch the user channel details.
+            if (!$channels['error']) {
+              // Search the channels for the current channel title.
+              foreach($channels['results'] as $key => $channel) {
+                // TODO: This might work on all channels
+                // sometimes the channel name isnt the same as the
+                // listed name. Seen this on only 1 channel now.
+                // But does need more testing/confirmation.
+                if ($oembed['title'] == $channel['title']) {
+                  $properties = self::getChannelProperties(check_plain($channels['results'][$key]['id']));
+                  // Add this as a value, because [0] wont do.
+                  $properties['results']['title'] = check_plain($channel['title']);
+                  break;
+
+                }
+              }
+            }
+          }
+          // Don't think this is ever called, because you
+          // need at least one (1) channel as a user, but
+          // still not sure, so i'll keep it in for now.
+          else {
+            throw new MediaInternetValidationException(
+                      "The UStream user or channel ID '$id' does not
+                      exist, is set to private, or has been deleted.");
+          }
+        }
+        break;
+
+    }
+    // If we have a result, cache and return it, else return false.
+    if (!empty($properties) && empty($properties['error'])) {
+      // Now set the cache with our newly validated properties per id.
+      $ids[$id] = $properties;
+      cache_set('media_ustream:id:' . $id, $ids[$id], 'cache_media_xml', variable_get('media__xml_cache_expire', 3600));
+      return $properties;
+    }
+    return FALSE;
+  }
+
+/**
+ * Implementation of custom_module_knownId
+ */
+function custom_module_knownId($id, $type) {	
+    if ($type == 'channeloruser') {
+      // TODO: PDO-dify this. (can EntityFieldQuery do this?)
+      $result = db_query("SELECT fid FROM {file_managed}
+                          WHERE REPLACE(filename, ' ', '') = '$id'");
+      $data = $result->fetchAll();
+      if (!empty($data[0])) {
+        return $data[0]->fid;
+      }
+      return FALSE;
+    }
+
+    $file_query = new EntityFieldQuery;
+    $result = $file_query->entityCondition('entity_type', 'file')
+      ->propertyCondition('uri', "ustream://$type/$id")
+      ->execute();
+
+    if (!empty($result['file'])) {
+      return key($result['file']);
+    }
+    return FALSE;
+  }
+
+function custom_module_check_soundcloud() {
+		
+	$embed = "https://soundcloud.com/nickiminaj/no-flex-zone-remix-feat-nicki-minaj";
+	$embed_1 = "https://soundcloud.com/mikemago/outlines";
+	$embed_2 = "https://soundcloud.com/thisiscuff/20140619-sirus-hood-cuff-sankeys-ibiza-sp-live-video";
+	$embed_3 = "https://soundcloud.com/groups/rock-progressive";
+	
+	$uri = custom_module_parse_soundcloud($embed);
+	$embed_html = custom_module_get_oembedcode($uri);	
+	print_r($embed_html);
+}
+
+
+function custom_module_parse_soundcloud($embed) {
+	
+	$patterns = array(
+        '@soundcloud\.com/([0-9A-Za-z\@\&\$_-]+)/([0-9A-Za-z\@\&\$_-]+)/([0-9A-Za-z\@\&\$_-]+)@i',
+        '@soundcloud\.com/([0-9A-Za-z\@\&\$_-]+)/([0-9A-Za-z\@\&\$_-]+)@i',
+        '@soundcloud\.com/([0-9A-Za-z\@\&\$_-]+)@i',
+    );
+	
+	foreach($patterns  as $pattern) {
+		preg_match($pattern, $embed, $matches);		
+		if ( isset($matches[1]) && !isset($matches[2]) ) {	
+			$uri = file_stream_wrapper_uri_normalize('soundcloud://u/' . $matches[1]);					
+			return $uri;
+		}  // End of condition 1 only for u
+		
+		if( isset($matches[2]) && !isset($matches[3])) {			
+			if($matches[1] == 'groups'){
+				$uri = file_stream_wrapper_uri_normalize('soundcloud://g/' . $matches[2] );
+			}else{
+				$uri = file_stream_wrapper_uri_normalize('soundcloud://u/' . $matches[1] . '/a/' . $matches[2]);				
+			}        
+			return $uri;
+		}
+		
+		if(isset($matches[3])) {
+			if($matches[2] == 'sets'){
+				$uri = file_stream_wrapper_uri_normalize('soundcloud://u/' . $matches[1] . '/s/' . $matches[3]);  
+				return $uri;
+			}
+		}		
+	}	
+	
+}
+
+function custom_module_get_oembedcode($uri) {
+	$external_url = drupal_realpath($uri);						
+	$oembed_url = url('http://soundcloud.com/oembed', array('query' => array('url' => $external_url, 'format' => 'json')));
+	$response = drupal_http_request($oembed_url);
+	if (!isset($response->error)) {				
+		$embed_html = drupal_json_decode($response->data);
+		$embed_html = str_replace('width="100%" ', 'width="450" ', $embed_html);
+		return $embed_html;
+	} else {
+		return FALSE;
+	}
+}

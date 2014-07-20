@@ -1,0 +1,6 @@
+name = "Video Embed Ustream"
+description = "Provides Ustream handler for Video Embed Fields."
+package = Media
+configure = admin/config/media/vef_video_styles
+dependencies[] = "video_embed_field"
+core = 7.x

@@ -1,0 +1,235 @@
+<?php
+
+/**
+ * @file
+ * Add a handler for metacafe videos to Video Embed Field
+ * with this module you can add videos from ustream.com
+ */
+
+/**
+ * Implements hook_video_embed_handler_info().
+ */
+function video_embed_ustream_video_embed_handler_info() {
+$handlers = array();
+$handlers['ustream'] = array(
+    'title' => 'Ustream Video',
+    'function' => 'video_embed_ustream_handle_video',
+    'thumbnail_function' => 'video_embed_ustream_handle_thumbnail',
+    'form' => 'video_embed_ustream_form',
+    'domains' => array(
+      'ustream.tv',
+    ),
+  // Defaults are the defaults to provide to your form.
+    'defaults' => array(
+      'width' => 640,
+      'height' => 480,      
+      'allowautoplay' => FALSE,
+    ),
+  );
+  return $handlers;	
+}
+
+/**
+ * Provide a form to configure out video settings.
+ *
+ * @param array $defaults
+ *   default/current values for your provider, the currently saved settings
+ *   with empty values filled with the defaults provided in info hook
+ *
+ * @return array
+ *   form as defined by forms api
+ */
+function video_embed_ustream_form($defaults) {
+  $form = array();
+  $form['height'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Player Height'),
+    '#description' => t('The height of the player.'),
+    '#default_value' => $defaults['height'],
+    '#element_validate' => array('_video_embed_ustream_element_validate'),
+  );
+  $form['width'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Player Width'),
+    '#description' => t('The width of the player.'),
+    '#default_value' => $defaults['width'],
+    '#element_validate' => array('_video_embed_ustream_element_validate'),
+  );
+  
+  $form['allowautoplay'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Allow Autoplay'),
+    '#desecription' => t('This will allow the video to autoplay.'),
+    '#default_value' => $defaults['allowautoplay'],
+  );
+  return $form;
+}
+
+/**
+ * This is the video handler (the 'function' key from handler_info).
+ *
+ * @param string $url
+ *   the full video url
+ *
+ * @param array $settings
+ *   an associative array of this handlers settings, from the settings form
+ *
+ * @return string
+ *   the embed code for the video
+ */
+ function video_embed_ustream_handle_video($url, $settings) {	 
+	
+	 $width = $settings['width'];
+	 $height = $settings['height'];
+	 $autoplay = $settings['allowautoplay'];
+	 $normal_uri = _video_embed_ustream_parse_url($url);
+	 $embed_url = _video_embed_ustream_get_oembedcode($normal_uri, 1);	
+	 if($embed_url) {
+		$emb = "<iframe src=' ".$embed_url." '    width=' ".$width." '    height=' ".$height." '  class='media-ustream-player' style='border: 0' ></iframe>";
+		$video = array(
+			'#markup' => $emb,
+		);
+		return $video;  
+	}
+	return FALSE;
+}
+
+/*
+ *  Implementation of custom_module_check_ustream
+ */
+function _video_embed_ustream_parse_url($embedCode) {
+	
+	 $embedCode = trim($embedCode);
+
+    // Patterns.
+    $recorded_patterns = array(
+      // Matches the URL for the video page.
+      '@ustream\.tv/recorded/(\d+)@i'             => 'recorded',
+      // Matches the URL from the embed code for recorded videos.
+      '@ustream\.tv/embed/recorded/([^"\&\?]+)@i' => 'recorded',
+      // Channel.
+      '@ustream\.tv/channel/([a-zA-Z0-9_\-]+)@i'  => 'live',
+      // Channel embed.
+      '@ustream\.tv/embed/([^"\&\?]+)@i'          => 'live',
+      // Matches the URL for the user page.
+      '@ustream\.tv/user/([a-zA-Z0-9_\-]+)@i'     => 'user',
+      // User channel or promoted channel.
+      '@ustream\.tv/([a-zA-Z0-9_\-]+)$@i'         => 'channeloruser',
+    );
+    
+    foreach ($recorded_patterns as $pattern => $type) {
+      preg_match($pattern, $embedCode, $matches);
+      if(!empty($matches[1])) {			
+			if ($fid = custom_module_knownId(check_plain($matches[1]), $type)) {				
+				  $existing_file = file_load($fid);
+				  $parts = explode('://', $existing_file->uri);				  
+				  $file_uri = $parts[1];				
+			}
+		}
+	}
+  
+  if(isset($file_uri)) {
+	 $uri = file_stream_wrapper_uri_normalize('ustream://' . $file_uri);	 
+	 return $uri;
+  }    
+}
+
+/**
+ * Implementation of video_embed_ustream_get_oembedcode
+ */
+function _video_embed_ustream_get_oembedcode($uri, $autoplay = 1) {
+	  $wrapper = file_stream_wrapper_get_instance_by_uri($uri);
+	 $parameters = $wrapper->get_parameters();
+	 $params = _video_embed_ustream_get_video_id($uri);
+	 $query = array(    
+		'wmode' => 'direct',
+	);
+	$query['autoplay'] = $autoplay;
+	if ($parameters['recorded']) {
+		$url = "http://www.ustream.tv/embed/recorded/{$params['video_id']}";		
+	}else {
+		$url = "http://www.ustream.tv/embed/{$params['video_id']}";		
+	}
+	$embed_url = url($url, array('query' => $query, 'external' => TRUE));	 
+	return $embed_url;
+}
+
+/**
+ * Implementation of custom_module_parse_url
+ */
+function _video_embed_ustream_get_video_id($url) {
+    $path = explode('://', $url);
+    $parts = explode('/',  $path[1]);
+    $total = count($parts);
+    if ($total != 2 || $path[0] != 'ustream') {
+      return FALSE;
+    }
+    $params = array();
+    $params['recorded'] = ($parts[0] == 'recorded');
+    $params['video_id'] = $parts[1];
+    return $params;
+}
+
+/**
+ * Retreive the thumbnail for the ustream video.
+ *
+ * @param string $url
+ *   the url of the video as entered by the user
+ *
+ * @return array
+ *   an array with the keys:
+ *     'id' => an id for the video which is unique to your provider
+ *     'url' => the url to retrieve the thumbnail from
+ *
+function video_embed_ustream_handle_thumbnail($url) {
+  $id = _video_embed_ustream_get_video_id($url);
+  $thumbnail = "http://www.ustream.com/thumb/$id.jpg";
+  return array(
+    'id' => $id,
+    'url' => $thumbnail,
+  );
+}
+*/
+
+/**
+ * Function for validating width and height in setting form.
+ */
+function _video_embed_ustream_element_validate($element, &$form_state) {
+  $check = _video_embed_ustream_check_input($element['#value']);
+  if (!empty($element['#value']) && !$check) {
+    form_error($element, t('The "!name" option must contain a valid value. You may either leave the text field empty or enter a string like "640px" or "640"', array('!name' => t($element['#title']))));
+  }
+}
+/**
+ * Helper function to check for a valid input in height and width textfields.
+ *
+ * @param string $input
+ *   the string that contains input from setting form
+ *
+ * @return bool
+ *   if input is valid returns true else false
+ */
+function _video_embed_ustream_check_input($input) {
+  $input = check_plain($input);
+  if ($input == '') {
+    return FALSE;
+  }
+  $size = drupal_strlen($input);
+  $cur_char = '';
+  for ($i = 0; $i < $size; $i++) {
+    $cur_char = drupal_substr($input, $i, 1);
+    if ($cur_char >= '0' && $cur_char <= '9') {
+      continue;
+    }
+    break;
+  }
+  if ($i == $size) {
+    return TRUE;
+  }
+  elseif ($i > 0 && $i == $size - 2) {
+    if (drupal_substr($input, $i, 2) == 'px') {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
